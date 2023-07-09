@@ -1,0 +1,172 @@
+import cv2
+import requests
+import time
+import sqlite3
+from pyfirmata import Arduino, util, SERVO
+from pyfirmata import Arduino, util, STRING_DATA
+import tkinter as tk
+from tkinter import messagebox
+import os
+import sys
+import subprocess
+
+# Initialize the Arduino board and servo
+board = Arduino('COM8')
+# pin_9 = board.digital[9]
+# pin_9.mode = SERVO
+# servo_angle = 0
+# board.send_sysex(STRING_DATA, util.str_to_two_byte_iter('Access:'))
+
+regions = ['mx', 'us-ca']  # Change to your country
+cap = cv2.VideoCapture(1)  # Access the laptop camera
+start_time = None
+recognized_number = None
+number_plate_detected = False
+
+# Load the Haar cascade XML file for license plate detection
+plate_cascade = cv2.CascadeClassifier('haarcascade_russian_plate_number.xml')
+
+
+while True:
+    ret, frame = cap.read()  # Capture a frame from the camera
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # Convert frame to grayscale
+
+    # Detect license plate using Haar cascade
+    plates = plate_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5)
+
+    # Check if any license plate is detected
+    if len(plates) > 0:
+        if not number_plate_detected:
+            number_plate_detected = True
+            start_time = time.time()
+
+        # Assuming only one license plate is detected, you can modify the code to handle multiple plates
+        x, y, w, h = plates[0]
+        plate_frame = frame[y:y + h, x:x + w]
+
+        # Display the plate frame
+        cv2.imshow('License Plate', plate_frame)
+
+        # Check if 5 seconds have passed since the number plate detection
+        if time.time() - start_time >= 5:
+            # Save the captured image
+            cv2.imwrite('capture.jpg', frame)
+            break
+
+    cv2.imshow('Live Feed', frame)  # Display the live feed
+
+    if cv2.waitKey(1) == ord('q'):  # Press 'q' to quit
+        break
+
+cap.release()  # Release the camera
+cv2.destroyAllWindows()  # Close all windows
+
+# Upload the captured image to Plate Recognizer API if a number plate was detected
+if number_plate_detected:
+    with open('capture.jpg', 'rb') as fp:
+        response = requests.post(
+            'https://api.platerecognizer.com/v1/plate-reader/',
+            data=dict(regions=regions),  # Optional
+            files=dict(upload=fp),
+            headers={'Authorization': 'Token Number'})
+
+    # Extract only the license plate number from the response
+    plate_number = response.json()['results'][0]['plate']
+    formatted_plate_number = ' '.join([plate_number[i:i + 2] for i in range(0, len(plate_number) - 2, 2)])
+    formatted_plate_number += plate_number[-2:]  # Append the last two characters without a space
+
+    
+    # Connect to the SQLite database
+    conn = sqlite3.connect('vehicle_number.db')
+    c = conn.cursor()
+
+    
+    # Check if the license plate number is present in the database
+    c.execute("SELECT * FROM vehicle_numbers WHERE number=?", (plate_number,))
+    result = c.fetchone()
+
+
+def show_message(message):
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showinfo("Access", message)
+
+
+def display_message(message):
+    root = tk.Tk()
+    root.title("Access Granted")
+    label = tk.Label(root, text=message, font=("Arial", 16))
+    label.pack(pady=20)
+    label.config(fg="black", justify="center", font=("Arial", 16, "bold"))
+    root.after(5000, root.destroy)
+    root.mainloop()
+
+
+    if result:
+        message = f"Access Granted\nLicense Plate Number: {formatted_plate_number.upper()}"
+        plate_message = f"License Plate Number: {formatted_plate_number.upper()}"
+        # display_message(message)
+        board.send_sysex(STRING_DATA, util.str_to_two_byte_iter('Access Granted'))
+        board.send_sysex(STRING_DATA, util.str_to_two_byte_iter(formatted_plate_number.upper()))
+        time.sleep(5)
+        pin_9 = board.digital[9]
+        pin_9.mode = SERVO
+        servo_angle = 0
+        # time.sleep(4)
+        for angle in range(servo_angle, 90, 1):
+            pin_9.write(angle)
+            time.sleep(0.005)
+            servo_angle = angle
+        time.sleep(4)
+        # Move the servo back to the original position slowly
+        for angle in range(servo_angle, 0, -1):
+            pin_9.write(angle)
+            time.sleep(0.005)
+            servo_angle = 0
+
+        # time.sleep(6)
+        board.exit()
+        # time.sleep(2) optional
+        subprocess.call([sys.executable, os.path.realpath(__file__)] + sys.argv[1:])  # Code runs continiously
+    else:
+        board.send_sysex(STRING_DATA, util.str_to_two_byte_iter('Access Denied'))
+        board.send_sysex(STRING_DATA, util.str_to_two_byte_iter(formatted_plate_number.upper()))
+        confirm_message = f"Access Denied\nLicense Plate Number: {formatted_plate_number.upper()}\n\nDo you want to add this license plate to the database?"
+        confirmed = messagebox.askyesno("Access Denied", confirm_message)
+        board.exit()
+    if confirmed:
+        c.execute("INSERT INTO vehicle_numbers (number) VALUES (?)", (plate_number,))
+        conn.commit()
+        # Access Granted when added to database
+        board = Arduino('COM8')
+        # pin_9 = board.digital[9]
+        # pin_9.mode = SERVO
+        # servo_angle = 0
+        board.send_sysex(STRING_DATA, util.str_to_two_byte_iter('Access Granted'))
+        board.send_sysex(STRING_DATA, util.str_to_two_byte_iter(formatted_plate_number.upper()))
+        show_message("License plate added to the database. Access Granted.")
+
+        pin_9 = board.digital[9]
+        pin_9.mode = SERVO
+        servo_angle = 0
+
+        time.sleep(1)
+        for angle in range(servo_angle, 90, 1):
+            pin_9.write(angle)
+            time.sleep(0.005)
+            servo_angle = angle
+        time.sleep(4)
+        # Move the servo back to the original position slowly
+        for angle in range(servo_angle, 0, -1):
+            pin_9.write(angle)
+            time.sleep(0.005)
+            servo_angle = 0
+        board.exit()
+        subprocess.call([sys.executable, os.path.realpath(__file__)] + sys.argv[1:])
+    else:
+        show_message("Access Denied")
+        subprocess.call([sys.executable, os.path.realpath(__file__)] + sys.argv[1:])
+
+
+
+
