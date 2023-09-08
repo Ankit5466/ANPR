@@ -1,3 +1,6 @@
+# 1.Number plate recognition using tesseract-OCR
+# 2.Storing the extracted number plate text in database
+
 import cv2
 import imutils
 import numpy as np
